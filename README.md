@@ -1,6 +1,6 @@
 # Vibe Writing
 
-由AI驱动的小说创作平台。基于novel-create技能的创作方法论，提供对话式AI写作体验。
+AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法论，提供对话式 AI 写作体验。
 
 ## 功能特性
 
@@ -45,7 +45,7 @@
 ### 一键安装（推荐）
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/524985177-png/vibe-writting.git
 cd vibe-writing
 ./setup.sh
 ```
@@ -55,7 +55,7 @@ cd vibe-writing
 ### 手动安装
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/524985177-png/vibe-writting.git
 cd vibe-writing
 
 # 后端
@@ -176,7 +176,7 @@ vibe-writing/
 └── skills/                      # novel-create skill（创作方法论）
     └── novel-create/
         ├── SKILL.md             # 创作规则与流程
-├── references/ # 23个写作参考文档
+        ├── references/          # 23 个写作参考文档
         └── scripts/             # 质量检查脚本
 ```
 
@@ -186,7 +186,7 @@ vibe-writing/
 |------|------|------|
 | GET | `/api/projects` | 项目列表 |
 | POST | `/api/projects` | 创建项目 |
-|POST| `/api/ai/chat` |AI对话（流式）|
+| POST | `/api/ai/chat` | AI 对话（流式） |
 | POST | `/api/ai/generate-outline` | 生成大纲 |
 | POST | `/api/projects/{id}/quality/{chapter_id}` | 质量检查 |
 | GET | `/api/projects/{id}/foreshadowings` | 伏笔列表 |
@@ -198,4 +198,4 @@ vibe-writing/
 
 ## 许可证
 
-麻省理工学院
+MIT
