@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .api import projects, chapters, ai, documents, story_elements, conversations, quality
+from .api import projects, chapters, ai, documents, story_elements, conversations, quality, export
 
 
 @asynccontextmanager
@@ -40,6 +40,7 @@ app.include_router(documents.router)
 app.include_router(story_elements.router)
 app.include_router(conversations.router)
 app.include_router(quality.router)
+app.include_router(export.router)
 
 
 @app.get("/api/health")

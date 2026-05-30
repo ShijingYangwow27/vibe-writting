@@ -530,26 +530,31 @@ async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db)):
                         analysis_text = h["content"]
                         break
 
-                write_prompt = f"""请根据以下写前分析，撰写第 {chapter.chapter_number} 章的完整正文。
+                write_prompt = f"""请根据以下写前分析，撰写第 {chapter.chapter_number} 章。
 
 ## 写前分析
 {analysis_text[:3000]}
 
-## 写作要求（必须严格遵守）
+## 输出格式（必须严格遵守）
+第一行输出标题，用 # 开头：
+# 章节标题
+
+然后空一行，直接开始正文。不要输出其他任何元信息。
+
+## 写作要求
 1. 默认目标 3000-5000 字，不够就扩写细节
 2. 开头前 20% 必须有钩子
 3. 每章至少推进一条线、回应一个旧悬念、留下一个新钩子
-4. 直接输出纯正文，不写章节标题、不写概要
-5. 场景内部的 Beats 只作隐性骨架，正文要写成连续叙事
-6. **必须严格遵守项目记忆中的世界观设定和法则，不能自相矛盾**
-7. **角色行为必须符合其性格设定，不能 OOC**
-8. **展示不讲述**：用动作、对话、环境细节承载情绪，不要空泛描述
-9. **长短句交替**，用动作、反应、对话承载情绪
-10. **不要写 AI 味**：避免"此外""然而""值得注意"等套语
-11. **伏笔追踪**：项目记忆中有活跃伏笔，本章应至少推进或呼应一条。自然融入正文，不要刻意标注。
-12. **情绪补偿**：如果本章主角受挫/吃亏，必须在本章或紧接着给出补偿（反制、收益、关系回应、信息获取），不能长期纯受气。
+4. 场景内部的 Beats 只作隐性骨架，正文要写成连续叙事
+5. **必须严格遵守项目记忆中的世界观设定和法则，不能自相矛盾**
+6. **角色行为必须符合其性格设定，不能 OOC**
+7. **展示不讲述**：用动作、对话、环境细节承载情绪，不要空泛描述
+8. **长短句交替**，用动作、反应、对话承载情绪
+9. **不要写 AI 味**：避免"此外""然而""值得注意"等套语
+10. **伏笔追踪**：项目记忆中有活跃伏笔，本章应至少推进或呼应一条
+11. **情绪补偿**：主角受挫后必须有补偿，不能长期纯受气
 
-请直接输出正文："""
+请直接输出："""
 
                 full_content = ""
                 async for chunk in ai._call_ai_stream(system_prompt, write_prompt, max_tokens=8192, history=data.history):
@@ -558,6 +563,12 @@ async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db)):
 
                 # 保存正文到章节
                 clean_content = re.sub(r'\[ACTION:\w+:.+?\]', '', full_content).strip()
+                # 提取标题（第一行 # 开头）
+                title_match = re.match(r'^#\s*(.+)', clean_content)
+                if title_match:
+                    chapter.title = title_match.group(1).strip()
+                    # 从正文中移除标题行
+                    clean_content = re.sub(r'^#\s*.+\n?', '', clean_content).strip()
                 chapter.content = clean_content
                 chapter.word_count = len(clean_content.replace(" ", "").replace("\n", ""))
                 chapter.status = "completed"
@@ -596,24 +607,23 @@ async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db)):
                 # 写前分析模式：让 AI 先输出分析+场景规划，而不是直接写正文
                 context_prefix = f"""[系统通知] 已创建第{chapter_created.chapter_number}章「{chapter_created.title}」。
 
-请执行写前分析，必须包含以下内容：
+请执行写前分析。**要求：每项只写一句话，不要展开论述。**
 
 ### 写前分析
-- **视角(POV)**：本章主视角角色
-- **目标**：本章核心目标（要推进什么）
-- **冲突**：本章核心冲突
-- **钩子方向**：结尾钩子怎么设计
-- **主角状态**：主角当前处境
+- 视角：本章跟谁的视角（一句话）
+- 目标：本章要推进什么（一句话）
+- 冲突：核心冲突是什么（一句话）
+- 钩子方向：结尾怎么勾住读者（一句话）
+- 主角状态：主角当前处境（一句话）
 
-### 场景规划（必须输出3-5个场景）
-每个场景格式：
-**场景N：[场景名称]**
-- 地点：
-- 人物：
-- 核心事件：
+### 场景规划（3-5个场景）
+每个场景只写：
+**场景N：[名称]**
+- 地点：xxx
+- 人物：xxx
+- 事件：xxx
 - 类型：铺垫/冲突/高潮/转折/收尾
-- 情绪走向：起点→终点
-- 暗线：（伏笔或误导）
+- 情绪：xxx→xxx
 
 分析完成后，用户会确认再写正文。用户确认后会说「确认写作」。
 

@@ -45,7 +45,7 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 ### 一键安装（推荐）
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/524985177-png/vibe-writting.git
 cd vibe-writing
 ./setup.sh
 ```
@@ -55,7 +55,7 @@ cd vibe-writing
 ### 手动安装
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/524985177-png/vibe-writting.git
 cd vibe-writing
 
 # 后端

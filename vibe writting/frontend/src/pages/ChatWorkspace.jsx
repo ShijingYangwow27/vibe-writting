@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Send, Sparkles, BookOpen, PenLine, FileText, Copy, Check, ChevronRight, Search, Trash2 } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { useParams, Link } from 'react-router-dom'
+import { ArrowLeft, Send, Sparkles, BookOpen, PenLine, FileText, Copy, Check, ChevronRight, Search, Trash2, X } from 'lucide-react'
 import { useProjectStore } from '../stores/projectStore'
 import { useToast } from '../components/Toast'
-import { aiApi, documentApi, writeChapterStream, projectApi, storyApi, conversationApi, qualityApi } from '../api/client'
+import { documentApi, storyApi, conversationApi, qualityApi } from '../api/client'
 
 // 简易 Markdown 渲染
 function renderMarkdown(text) {
@@ -126,7 +126,6 @@ function SceneCards({ content }) {
 }
 
 export default function ChatWorkspace() {
-  const navigate = useNavigate()
   const { id } = useParams()
   const { currentProject, fetchProject, updateChapter, deleteChapter, chapters, fetchChapters } = useProjectStore()
   const { toast } = useToast()
@@ -141,6 +140,7 @@ export default function ChatWorkspace() {
   const [chapterSearch, setChapterSearch] = useState('')
   const [conversationId, setConversationId] = useState(null)
   const [showMemory, setShowMemory] = useState(false)
+  const [showExport, setShowExport] = useState(false)
   const chapterScrollRef = useRef(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
@@ -469,20 +469,30 @@ export default function ChatWorkspace() {
 
       // 如果有创建操作，刷新数据
       if (createdEntities.length > 0) {
-        fetchChapters(id)
-        // 如果创建了章节，自动运行质量检查
+        // 等待后端保存章节内容，再刷新并检查
+        await new Promise(r => setTimeout(r, 1500))
+        await fetchChapters(id)
+
+        // 如果创建了章节且有内容，运行质量检查
         const createdChapter = createdEntities.find(e => e.type === 'chapter')
         if (createdChapter) {
-          try {
-            const { data } = await qualityApi.summary(id, createdChapter.id)
-            if (data.summary) {
-              setMessages(prev => [...prev, { role: 'assistant', content: data.summary }])
-              if (conversationId) {
-                conversationApi.addMessage(id, conversationId, { role: 'assistant', content: data.summary }).catch(() => {})
+          const updatedChapters = useProjectStore.getState().chapters
+          const ch = updatedChapters.find(c => c.id === createdChapter.id)
+          if (ch && ch.content && ch.status === 'completed') {
+            try {
+              const { data } = await qualityApi.summary(id, createdChapter.id)
+              if (data.summary) {
+                setMessages(prev => [...prev, { role: 'assistant', content: data.summary }])
+                if (conversationId) {
+                  conversationApi.addMessage(id, conversationId, { role: 'assistant', content: data.summary }).catch(() => {})
+                }
               }
-            }
-          } catch {}
+            } catch {}
+          }
         }
+      } else {
+        // 没有操作时也刷新章节列表
+        fetchChapters(id)
       }
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err.message}` }])
@@ -992,16 +1002,27 @@ export default function ChatWorkspace() {
             </div>
 
             {/* 底部入口 */}
-            <div className="px-4 py-3 border-t border-gray-100">
-              <Link to={`/project/${id}/documents`}
-                className="flex items-center justify-center gap-1.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-xl transition-colors">
-                <BookOpen className="w-3.5 h-3.5" />
-                大纲 / 文档管理
-              </Link>
+            <div className="px-3 py-3 border-t border-gray-100">
+              <div className="grid grid-cols-2 gap-2">
+                <Link to={`/project/${id}/documents`}
+                  className="flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-xl transition-colors border border-gray-100">
+                  <BookOpen className="w-3.5 h-3.5" />
+                  大纲/文档
+                </Link>
+                <button onClick={() => setShowExport(true)}
+                  className="flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors border border-gray-100">
+                  📥 导出 TXT
+                </button>
+              </div>
             </div>
           </div>
         )}
       </div>
+
+      {/* ===== 导出弹窗 ===== */}
+      {showExport && (
+        <ExportModal projectId={id} chapters={chapters} onClose={() => setShowExport(false)} />
+      )}
 
       {/* ===== 记忆面板 ===== */}
       {showMemory && (
@@ -1019,6 +1040,79 @@ export default function ChatWorkspace() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// 导出弹窗组件
+function ExportModal({ projectId, chapters, onClose }) {
+  const [selected, setSelected] = useState(new Set(chapters.filter(c => c.status === 'completed' && c.content).map(c => c.id)))
+
+  const completed = chapters.filter(c => c.status === 'completed' && c.content)
+  const toggleAll = () => {
+    if (selected.size === completed.length) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(completed.map(c => c.id)))
+    }
+  }
+
+  const handleExport = () => {
+    if (selected.size === 0) return
+    if (selected.size === completed.length) {
+      window.open(`/api/projects/${projectId}/export/txt`, '_blank')
+    } else {
+      for (const chId of selected) {
+        window.open(`/api/projects/${projectId}/export/txt/${chId}`, '_blank')
+      }
+    }
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-800">📥 导出为 TXT</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="px-6 py-4 max-h-[50vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm text-gray-600">选择要导出的章节</span>
+            <button onClick={toggleAll} className="text-xs text-purple-600 hover:text-purple-700">
+              {selected.size === completed.length ? '取消全选' : '全选'}
+            </button>
+          </div>
+          <div className="space-y-1">
+            {completed.map(ch => (
+              <label key={ch.id} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                <input type="checkbox" checked={selected.has(ch.id)}
+                  onChange={() => {
+                    const next = new Set(selected)
+                    next.has(ch.id) ? next.delete(ch.id) : next.add(ch.id)
+                    setSelected(next)
+                  }}
+                  className="w-4 h-4 text-purple-600 rounded" />
+                <span className="text-xs text-gray-400 w-6">#{ch.chapter_number}</span>
+                <span className="text-sm text-gray-800 flex-1">{ch.title || `第${ch.chapter_number}章`}</span>
+                <span className="text-xs text-gray-400">{ch.word_count} 字</span>
+              </label>
+            ))}
+          </div>
+          {completed.length === 0 && (
+            <p className="text-center text-sm text-gray-400 py-8">暂无已完成的章节</p>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-gray-100 flex gap-3">
+          <button onClick={handleExport} disabled={selected.size === 0}
+            className="flex-1 py-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 disabled:opacity-40 text-sm font-medium btn-press">
+            导出 {selected.size} 个章节
+          </button>
+          <button onClick={onClose} className="px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 text-sm">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
