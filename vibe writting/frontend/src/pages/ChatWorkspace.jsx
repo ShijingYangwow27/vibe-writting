@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Send, Sparkles, BookOpen, PenLine, FileText, Copy, Check, ChevronRight, Search, Trash2 } from 'lucide-react'
 import { useProjectStore } from '../stores/projectStore'
 import { useToast } from '../components/Toast'
-import { aiApi, documentApi, writeChapterStream, projectApi } from '../api/client'
+import { aiApi, documentApi, writeChapterStream, projectApi, storyApi, conversationApi, qualityApi } from '../api/client'
 
 // 简易 Markdown 渲染
 function renderMarkdown(text) {
@@ -65,10 +65,70 @@ function StepProgress({ steps, current }) {
   )
 }
 
+// 场景卡片组件：从 AI 回复中解析场景并展示
+function SceneCards({ content }) {
+  const sceneRegex = /\*\*场景(\d+)：(.+?)\*\*([\s\S]*?)(?=\*\*场景\d+|##|$)/g
+  const scenes = []
+  let match
+  while ((match = sceneRegex.exec(content)) !== null) {
+    const sceneContent = match[3].trim()
+    const fields = {}
+    const fieldRegex = /[-•]\s*\*?\*?(.+?)\*?\*?[：:]\s*(.+)/g
+    let fieldMatch
+    while ((fieldMatch = fieldRegex.exec(sceneContent)) !== null) {
+      fields[fieldMatch[1].trim()] = fieldMatch[2].trim()
+    }
+    scenes.push({
+      num: match[1],
+      name: match[2].trim(),
+      fields,
+    })
+  }
+
+  if (scenes.length === 0) return null
+
+  const typeColors = {
+    '铺垫': 'bg-blue-50 text-blue-600 border-blue-200',
+    '冲突': 'bg-red-50 text-red-600 border-red-200',
+    '高潮': 'bg-amber-50 text-amber-600 border-amber-200',
+    '转折': 'bg-purple-50 text-purple-600 border-purple-200',
+    '收尾': 'bg-green-50 text-green-600 border-green-200',
+  }
+
+  return (
+    <div className="mt-3 space-y-2">
+      <p className="text-xs font-medium text-gray-500 flex items-center gap-1">
+        <span className="w-4 h-4 rounded bg-purple-100 flex items-center justify-center text-[10px]">📋</span>
+        场景规划（{scenes.length} 个场景）
+      </p>
+      {scenes.map((scene) => (
+        <div key={scene.num} className="bg-white rounded-lg border border-gray-100 p-3 text-xs">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded bg-purple-500 text-white flex items-center justify-center text-[10px] font-bold">{scene.num}</span>
+            <span className="font-medium text-gray-800">{scene.name}</span>
+            {scene.fields['类型'] && (
+              <span className={`px-1.5 py-0.5 rounded text-[10px] border ${typeColors[scene.fields['类型']] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                {scene.fields['类型']}
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-600">
+            {scene.fields['地点'] && <div><span className="text-gray-400">地点：</span>{scene.fields['地点']}</div>}
+            {scene.fields['人物'] && <div><span className="text-gray-400">人物：</span>{scene.fields['人物']}</div>}
+            {scene.fields['核心事件'] && <div className="col-span-2"><span className="text-gray-400">事件：</span>{scene.fields['核心事件']}</div>}
+            {scene.fields['情绪走向'] && <div className="col-span-2"><span className="text-gray-400">情绪：</span>{scene.fields['情绪走向']}</div>}
+            {scene.fields['暗线'] && <div className="col-span-2 text-gray-400 italic"><span>暗线：</span>{scene.fields['暗线']}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function ChatWorkspace() {
   const navigate = useNavigate()
   const { id } = useParams()
-  const { currentProject, fetchProject, createChapter, updateChapter, deleteChapter, chapters, fetchChapters } = useProjectStore()
+  const { currentProject, fetchProject, updateChapter, deleteChapter, chapters, fetchChapters } = useProjectStore()
   const { toast } = useToast()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -79,14 +139,47 @@ export default function ChatWorkspace() {
   const [writeSteps, setWriteSteps] = useState(null) // 写作步骤进度
   const [readProgress, setReadProgress] = useState(0)
   const [chapterSearch, setChapterSearch] = useState('')
+  const [conversationId, setConversationId] = useState(null)
+  const [showMemory, setShowMemory] = useState(false)
   const chapterScrollRef = useRef(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
+  // 加载项目和对话历史
   useEffect(() => {
     fetchProject(id)
     fetchChapters(id)
+    loadOrCreateConversation()
   }, [id])
+
+  const loadOrCreateConversation = async () => {
+    try {
+      // 获取最近的对话
+      const { data: convs } = await conversationApi.list(id)
+      if (convs.length > 0) {
+        // 加载最近对话的消息
+        const convId = convs[0].id
+        setConversationId(convId)
+        const { data: msgs } = await conversationApi.getMessages(id, convId)
+        if (msgs.length > 0) {
+          setMessages(msgs.map(m => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            type: m.message_type || 'text',
+            time: new Date(m.created_at),
+            metadata: m.metadata_json || (m.metadata ? JSON.parse(m.metadata) : null),
+          })))
+        }
+      } else {
+        // 创建新对话
+        const { data: conv } = await conversationApi.create(id)
+        setConversationId(conv.id)
+      }
+    } catch (err) {
+      console.error('Failed to load conversation:', err)
+    }
+  }
 
   // 欢迎消息
   useEffect(() => {
@@ -96,15 +189,16 @@ export default function ChatWorkspace() {
         // 新项目：详细引导
         setMessages([{
           role: 'assistant',
-          content: `你好！我是 **${currentProject.name}** 的 AI 写作助手。\n\n我可以帮你完成小说创作的全流程：`,
+          content: `你好！我是 **${currentProject.name}** 的 AI 写作助手。\n\n你可以通过对话完成创作的全流程：`,
           type: 'welcome',
           welcomeData: {
             steps: [
               { icon: '📋', title: '生成大纲', desc: 'AI 根据你的设定生成完整故事框架', action: '生成大纲' },
-              { icon: '📝', title: '逐章创作', desc: 'AI 分析→规划场景→流式生成正文', action: '写下一章' },
-              { icon: '✨', title: '润色优化', desc: '对已生成的章节进行文笔优化', action: '润色' },
+              { icon: '👤', title: '创建角色', desc: '描述角色，AI 自动建立角色档案', action: '创建角色 ' },
+              { icon: '🔮', title: '埋伏笔', desc: '告诉 AI 要埋什么伏笔', action: '创建伏笔 ' },
+              { icon: '📝', title: '写下一章', desc: 'AI 分析→规划场景→流式生成正文', action: '写下一章' },
             ],
-            tip: '直接输入你的想法，或点击下方按钮开始。',
+            tip: '直接描述你想做的事，例如「创建角色 李明，25岁，性格内向但内心热血」',
           },
         }])
       } else {
@@ -129,13 +223,25 @@ export default function ChatWorkspace() {
     const hasChapters = chapters.length > 0
     const lastMsg = messages[messages.length - 1]
 
+    // 检查最近消息是否有写前分析（含"写前分析"和"POV"关键词）
+    const hasAnalysis = lastMsg?.role === 'assistant' &&
+      lastMsg.content?.includes('写前分析') && lastMsg.content.includes('POV')
+
+    if (hasAnalysis) {
+      return [
+        { label: '✓ 确认写作', action: '确认写作，开始写正文', primary: true },
+        { label: '✏️ 修改分析', action: '我想修改一下...' },
+      ]
+    }
+
     // 根据最后一条消息动态调整
     if (lastMsg?.type === 'chapter') {
       return [
         { label: '✨ 润色', action: '润色' },
         { label: '🔄 重写', action: '重写' },
         { label: '📝 写下一章', action: '写下一章', primary: true },
-        { label: '📖 查看', action: '查看章节列表' },
+        { label: '👤 创建角色', action: '创建角色 张三，性格...' },
+        { label: '🔮 埋伏笔', action: '创建伏笔 ...' },
       ]
     }
 
@@ -143,15 +249,17 @@ export default function ChatWorkspace() {
       return [
         { label: '📝 写下一章', action: '写下一章', primary: true },
         { label: '✨ 润色', action: '润色' },
-        { label: '🔄 重写', action: '重写' },
+        { label: '👤 创建角色', action: '创建角色 张三，性格...' },
+        { label: '🔮 埋伏笔', action: '创建伏笔 ...' },
+        { label: '📅 记录事件', action: '记录事件 在第X章...' },
         { label: '📋 大纲', action: '查看大纲' },
-        { label: '📚 章节', action: '章节列表' },
       ]
     }
     return [
       { label: '📋 生成大纲', action: '生成大纲', primary: true },
+      { label: '👤 创建角色', action: '创建角色 张三，性格...' },
+      { label: '🔮 埋伏笔', action: '创建伏笔 ...' },
       { label: '📝 写第一章', action: '写下一章' },
-      { label: '📖 查看文档', action: '去文档' },
     ]
   }, [chapters, streaming, loading, messages])
 
@@ -195,204 +303,131 @@ export default function ChatWorkspace() {
     }
   }
 
+  // Rewind：回退到指定消息，删除之后的所有消息，并撤销对应的操作
+  const handleRewind = async (msg) => {
+    if (!conversationId || !msg.id) return
+    if (!confirm('回退到此处？之后的所有对话和操作都将被撤销。')) return
+    try {
+      // 找到要删除的消息
+      const msgIdx = messages.findIndex(m => m.id === msg.id)
+      const messagesToDelete = messages.slice(msgIdx + 1)
+
+      // 撤销这些消息中创建的实体
+      const undoResults = []
+      for (const m of messagesToDelete) {
+        const entities = m.metadata?.created_entities || []
+        for (const entity of entities) {
+          try {
+            if (entity.type === 'character') {
+              await storyApi.deleteCharacter(id, entity.id)
+              undoResults.push(`撤销角色`)
+            } else if (entity.type === 'foreshadowing') {
+              await storyApi.deleteForeshadowing(id, entity.id)
+              undoResults.push(`撤销伏笔`)
+            } else if (entity.type === 'timeline') {
+              await storyApi.deleteTimelineEvent(id, entity.id)
+              undoResults.push(`撤销事件`)
+            } else if (entity.type === 'chapter') {
+              await deleteChapter(id, entity.id)
+              undoResults.push(`撤销章节`)
+            }
+          } catch {}
+        }
+      }
+
+      // 删除数据库中的消息
+      await conversationApi.rewind(id, conversationId, msg.id)
+
+      // 前端也删除
+      setMessages(prev => prev.slice(0, msgIdx + 1))
+
+      if (undoResults.length) {
+        toast.success(`已回退并撤销 ${undoResults.length} 项操作`)
+      }
+    } catch (err) {
+      toast.error('回退失败：' + err.message)
+    }
+  }
+
   const handleSend = async (text) => {
     const msg = (text || input).trim()
     if (!msg || loading || streaming) return
     setInput('')
-    setMessages(prev => [...prev, { role: 'user', content: msg, time: new Date() }])
+
+    // 保存用户消息到数据库
+    let userMsgId = null
+    if (conversationId) {
+      try {
+        const { data } = await conversationApi.addMessage(id, conversationId, { role: 'user', content: msg })
+        userMsgId = data.id
+      } catch {}
+    }
+    const userMsg = { id: userMsgId, role: 'user', content: msg, time: new Date() }
+    setMessages(prev => [...prev, userMsg])
+
     setLoading(true)
     try {
       await processUserMessage(msg)
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 出错了：${err.message}` }])
+      const errMsg = { role: 'assistant', content: `❌ 出错了：${err.message}` }
+      setMessages(prev => [...prev, errMsg])
+      if (conversationId) {
+        try {
+          const { data } = await conversationApi.addMessage(id, conversationId, { role: 'assistant', content: errMsg.content })
+          setMessages(prev => prev.map(m => m === errMsg ? { ...m, id: data.id } : m))
+        } catch {}
+      }
     } finally {
       setLoading(false)
     }
   }
 
   const processUserMessage = async (msg) => {
-    const lower = msg.toLowerCase()
+    // 所有消息直接交给 AI 处理，不做前端关键词匹配
+    // AI 拥有完整项目上下文，自己决定做什么
+    return handleGeneralChat(msg)
 
-    if (lower.includes('写下一章') || lower.includes('写第') || lower.includes('开始写作') || lower.includes('生成正文')) {
-      return handleWriteChapter()
-    }
-    if (lower.includes('大纲') || lower.includes('outline')) {
-      return (lower.includes('生成') || lower.includes('重新') || lower.includes('更新'))
-        ? handleGenerateOutline() : handleShowOutline()
-    }
-    if (lower.includes('润色') || lower.includes('优化') || lower.includes('polish')) return handlePolish()
-    if (lower.includes('重写') || lower.includes('改写') || lower.includes('rewrite')) return handleRewrite()
-    if (lower.includes('扩写') || lower.includes('展开') || lower.includes('expand')) return handleExpand()
-    if (lower.includes('角色') || lower.includes('人物') || lower.includes('character')) return handleShowCharacters()
-    if (lower.includes('章节') || lower.includes('目录') || lower.includes('进度')) return handleShowChapters()
-    if (lower.includes('去文档') || lower.includes('打开文档') || lower.includes('编辑大纲')) {
-      navigate(`/project/${id}/documents`)
-      return
-    }
     return handleGeneralChat(msg)
   }
 
   // ── 写下一章 ──
-  const handleWriteChapter = async () => {
-    await fetchChapters(id)
-    const allChapters = useProjectStore.getState().chapters
-    const maxNum = allChapters.reduce((max, ch) => Math.max(max, ch.chapter_number || 0), 0)
-    const nextNum = maxNum + 1
-    const steps = ['写前分析', '场景规划', '生成正文', '完成']
-    setWriteSteps({ steps, current: 0 })
-    setStreamText('')
-
-    try {
-      const chapter = await createChapter(id, { chapter_number: nextNum, title: `第${nextNum}章` })
-
-      // 写前分析
-      setWriteSteps(prev => ({ ...prev, current: 0 }))
-      setStreamText('📋 正在进行写前分析...')
-      let preAnalysis = null
-      try { ({ data: preAnalysis } = await aiApi.analyze(chapter.id)) } catch {}
-
-      // 场景规划
-      setWriteSteps(prev => ({ ...prev, current: 1 }))
-      setStreamText('🎯 正在规划场景...')
-      let scenePlan = null
-      try { ({ data: { scenes: scenePlan } } = await aiApi.planScenes(chapter.id)) } catch {}
-
-      // 流式生成正文
-      setWriteSteps(prev => ({ ...prev, current: 2 }))
-      setStreamText('')
-      let fullContent = ''
-      await writeChapterStream(chapter.id, scenePlan,
-        (chunk) => { fullContent += chunk; setStreamText(fullContent) },
-        async (done) => {
-          setWriteSteps(prev => ({ ...prev, current: 3 }))
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: fullContent,
-            chapterNum: nextNum,
-            wordCount: done.word_count,
-            type: 'chapter',
-          }])
-          setStreamText('')
-          setWriteSteps(null)
-          await fetchChapters(id)
-          await fetchProject(id)
+  // 解析后端返回的操作结果（格式：[ACTION:TYPE:id:param1:param2]）
+  const parseActionResult = (text) => {
+    const createdEntities = []
+    const actionRegex = /\[ACTION:(\w+):(.+?)\]/g
+    let match
+    while ((match = actionRegex.exec(text)) !== null) {
+      const actionType = match[1]
+      const parts = match[2].split(':')
+      const entityId = parseInt(parts[0])
+      if (entityId && !isNaN(entityId)) {
+        const typeMap = {
+          'CHAPTER_CREATED': 'chapter',
+          'CHARACTER_CREATED': 'character',
+          'FORESHADOWING_CREATED': 'foreshadowing',
+          'TIMELINE_CREATED': 'timeline',
         }
-      )
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 生成失败：${err.message}` }])
-      setStreamText('')
-      setWriteSteps(null)
-    } finally {
-      setStreaming(false)
-    }
-  }
-
-  const handleGenerateOutline = async () => {
-    setMessages(prev => [...prev, { role: 'assistant', content: '⏳ 正在生成大纲，大约需要 1 分钟...' }])
-    setStreaming(true)
-    try {
-      await aiApi.generateOutline({
-        project_id: parseInt(id),
-        answers: {
-          genre: currentProject.genre || '',
-          protagonist_structure: currentProject.protagonist_structure || 'single',
-          protagonist_personality: '',
-          core_conflict: currentProject.core_conflict || '',
-          target_chapters: String(currentProject.target_chapters || 20),
-          synopsis: currentProject.synopsis || '',
-        },
-      })
-      const { data } = await documentApi.get(id, 'outline')
-      setMessages(prev => [...prev, { role: 'assistant', content: data.content, type: 'outline' }])
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 大纲生成失败：${err.message}` }])
-    } finally { setStreaming(false) }
-  }
-
-  const handleShowOutline = async () => {
-    try {
-      const { data } = await documentApi.get(id, 'outline')
-      if (data.content && data.content.length > 50) {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.content, type: 'outline' }])
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: '还没有大纲。要我现在生成一份吗？' }])
+        if (typeMap[actionType]) {
+          createdEntities.push({ type: typeMap[actionType], id: entityId })
+        }
       }
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: '还没有大纲。要我现在生成一份吗？' }])
     }
-  }
-
-  const handlePolish = async () => {
-    const allChapters = useProjectStore.getState().chapters
-    if (!allChapters.length) return setMessages(prev => [...prev, { role: 'assistant', content: '还没有章节，请先说「写下一章」。' }])
-    const lastCh = allChapters[allChapters.length - 1]
-    setMessages(prev => [...prev, { role: 'assistant', content: `⏳ 正在润色第${lastCh.chapter_number}章最后 500 字...` }])
-    setStreaming(true)
-    try {
-      const { data } = await aiApi.polish(lastCh.content.slice(-500))
-      setMessages(prev => [...prev, { role: 'assistant', content: data.result, type: 'polish' }])
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 润色失败：${err.message}` }])
-    } finally { setStreaming(false) }
-  }
-
-  const handleRewrite = async () => {
-    const allChapters = useProjectStore.getState().chapters
-    if (!allChapters.length) return setMessages(prev => [...prev, { role: 'assistant', content: '还没有章节，请先说「写下一章」。' }])
-    const lastCh = allChapters[allChapters.length - 1]
-    setMessages(prev => [...prev, { role: 'assistant', content: `⏳ 正在重写第${lastCh.chapter_number}章最后 500 字...` }])
-    setStreaming(true)
-    try {
-      const { data } = await aiApi.rewrite(lastCh.content.slice(-500))
-      setMessages(prev => [...prev, { role: 'assistant', content: data.result, type: 'rewrite' }])
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 重写失败：${err.message}` }])
-    } finally { setStreaming(false) }
-  }
-
-  const handleExpand = async () => {
-    const allChapters = useProjectStore.getState().chapters
-    if (!allChapters.length) return setMessages(prev => [...prev, { role: 'assistant', content: '还没有章节，请先说「写下一章」。' }])
-    const lastCh = allChapters[allChapters.length - 1]
-    setMessages(prev => [...prev, { role: 'assistant', content: '⏳ 正在扩写...' }])
-    setStreaming(true)
-    try {
-      const { data } = await aiApi.expand(lastCh.content.slice(-300))
-      setMessages(prev => [...prev, { role: 'assistant', content: data.result, type: 'expand' }])
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `❌ 扩写失败：${err.message}` }])
-    } finally { setStreaming(false) }
-  }
-
-  const handleShowCharacters = async () => {
-    try {
-      const { data } = await documentApi.get(id, 'outline')
-      const match = data.content?.match(/(?:角色|人物|主角|反派)[\s\S]{0,500}/)
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: match ? `👥 角色信息：\n\n${match[0]}` : '暂无角色信息，可在文档管理中添加。',
-      }])
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: '暂无角色信息。' }])
-    }
-  }
-
-  const handleShowChapters = async () => {
-    await fetchChapters(id)
-    const all = useProjectStore.getState().chapters
-    if (!all.length) return setMessages(prev => [...prev, { role: 'assistant', content: '还没有章节。说「写下一章」开始创作。' }])
-    const list = all.map(ch => `- **第${ch.chapter_number}章** ${ch.title || ''}（${ch.word_count}字）`).join('\n')
-    setMessages(prev => [...prev, { role: 'assistant', content: `📚 章节列表：\n\n${list}` }])
+    return createdEntities
   }
 
   const handleGeneralChat = async (msg) => {
     setStreaming(true)
     setStreamText('')
     try {
+      // 发送对话历史给 AI，让它有上下文记忆
+      const history = messages.slice(-30).map(m => ({
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content?.slice(0, 5000) || '',
+      }))
       const response = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: parseInt(id), message: msg }),
+        body: JSON.stringify({ project_id: parseInt(id), message: msg, history }),
       })
       if (!response.ok) throw new Error('请求失败')
       const reader = response.body.getReader()
@@ -411,8 +446,44 @@ export default function ChatWorkspace() {
           }
         }
       }
-      if (fullText) setMessages(prev => [...prev, { role: 'assistant', content: fullText }])
       setStreamText('')
+
+      // 解析后端返回的操作结果
+      const createdEntities = parseActionResult(fullText)
+      // 清除 [ACTION:...] 标签，只保留给用户看的内容
+      const displayText = fullText.replace(/\[ACTION:\w+:.+?\]/g, '').trim()
+
+      if (displayText) {
+        let aiMsgId = null
+        const metadata = createdEntities.length ? { created_entities: createdEntities } : null
+        if (conversationId) {
+          try {
+            const { data } = await conversationApi.addMessage(id, conversationId, {
+              role: 'assistant', content: displayText, metadata_json: metadata,
+            })
+            aiMsgId = data.id
+          } catch {}
+        }
+        setMessages(prev => [...prev, { id: aiMsgId, role: 'assistant', content: displayText }])
+      }
+
+      // 如果有创建操作，刷新数据
+      if (createdEntities.length > 0) {
+        fetchChapters(id)
+        // 如果创建了章节，自动运行质量检查
+        const createdChapter = createdEntities.find(e => e.type === 'chapter')
+        if (createdChapter) {
+          try {
+            const { data } = await qualityApi.summary(id, createdChapter.id)
+            if (data.summary) {
+              setMessages(prev => [...prev, { role: 'assistant', content: data.summary }])
+              if (conversationId) {
+                conversationApi.addMessage(id, conversationId, { role: 'assistant', content: data.summary }).catch(() => {})
+              }
+            }
+          } catch {}
+        }
+      }
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: `❌ ${err.message}` }])
       setStreamText('')
@@ -436,9 +507,15 @@ export default function ChatWorkspace() {
               <p className="text-xs text-gray-400">{chapters.length} 章已完成</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 rounded-full">
-            <Sparkles className="w-3 h-3 text-purple-500" />
-            <span className="text-xs text-purple-600 font-medium">AI 助手</span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowMemory(!showMemory)}
+              className="text-xs px-2.5 py-1 bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200 transition-colors">
+              🧠 记忆
+            </button>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 rounded-full">
+              <Sparkles className="w-3 h-3 text-purple-500" />
+              <span className="text-xs text-purple-600 font-medium">AI 助手</span>
+            </div>
           </div>
         </div>
 
@@ -487,13 +564,33 @@ export default function ChatWorkspace() {
                       <div className="text-sm leading-7 whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
                     </div>
                   ) : (
-                    <div className="text-sm leading-7 whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                    <div>
+                      <div className="text-sm leading-7 whitespace-pre-wrap" dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }} />
+                      {/* 自动渲染场景卡片 */}
+                      {msg.role === 'assistant' && msg.content?.includes('场景规划') && (
+                        <SceneCards content={msg.content} />
+                      )}
+                    </div>
                   )}
                 </div>
                 {/* AI 消息操作栏 */}
                 {msg.role === 'assistant' && (
                   <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <CopyButton text={msg.content} />
+                    {/* 写前分析 → 确认写作按钮 */}
+                    {msg.content?.includes('写前分析') && msg.content.includes('POV') && !msg.content.includes('✅ 已保存') && (
+                      <button onClick={() => handleSend('确认写作，开始写正文')}
+                        className="text-xs text-white bg-green-600 hover:bg-green-700 px-2 py-0.5 rounded font-medium transition-colors">
+                        ✓ 确认写作
+                      </button>
+                    )}
+                    {msg.id && (
+                      <button onClick={() => handleRewind(msg)}
+                        className="text-xs text-gray-400 hover:text-amber-600 px-1.5 py-0.5 rounded hover:bg-amber-50 transition-colors"
+                        title="回退到此处">
+                        ↩ 回退
+                      </button>
+                    )}
                     {msg.type === 'chapter' && (
                       <button onClick={() => setSelectedChapter(useProjectStore.getState().chapters.find(ch => ch.chapter_number === msg.chapterNum))}
                         className="text-xs text-gray-400 hover:text-purple-600 px-1.5 py-0.5 rounded hover:bg-purple-50 transition-colors">
@@ -905,6 +1002,154 @@ export default function ChatWorkspace() {
           </div>
         )}
       </div>
+
+      {/* ===== 记忆面板 ===== */}
+      {showMemory && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] shadow-2xl flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-gray-800">🧠 AI 记忆系统</h2>
+              <button onClick={() => setShowMemory(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <MemoryPanel projectId={id} project={currentProject} chapters={chapters} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 三层记忆面板组件
+function MemoryPanel({ projectId, project, chapters }) {
+  const [activeLayer, setActiveLayer] = useState('L3')
+  const [docs, setDocs] = useState({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    loadDocs()
+  }, [projectId])
+
+  const loadDocs = async () => {
+    setLoading(true)
+    try {
+      const types = ['outline', 'worldview', 'rules', 'conflict', 'settings', 'dialogue']
+      const results = {}
+      for (const t of types) {
+        try {
+          const { data } = await documentApi.get(projectId, t)
+          results[t] = data.content || ''
+        } catch { results[t] = '' }
+      }
+      setDocs(results)
+    } catch {}
+    setLoading(false)
+  }
+
+  const docLabels = {
+    outline: { label: '大纲', icon: '📋', desc: '故事框架与章节规划' },
+    worldview: { label: '世界观', icon: '🌍', desc: '世界设定与规则' },
+    rules: { label: '法则', icon: '📏', desc: '不可违背的故事法则' },
+    conflict: { label: '冲突设计', icon: '⚔️', desc: '冲突链与张力设计' },
+    settings: { label: '设定记录', icon: '📝', desc: '具体设定与细节' },
+    dialogue: { label: '角色台词库', icon: '💬', desc: '角色经典台词' },
+  }
+
+  const layers = [
+    { id: 'L3', label: 'L3 宪法记忆', desc: '世界观/法则/角色 — 最高优先级，不可违背', color: 'red' },
+    { id: 'L2', label: 'L2 项目记忆', desc: '大纲/伏笔/时间线/章节 — 项目运行状态', color: 'blue' },
+    { id: 'L1', label: 'L1 会话记忆', desc: '当前对话上下文 — AI 的短期记忆', color: 'green' },
+  ]
+
+  return (
+    <div>
+      {/* 层级选择 */}
+      <div className="flex gap-2 mb-6">
+        {layers.map(l => (
+          <button key={l.id} onClick={() => setActiveLayer(l.id)}
+            className={`flex-1 p-3 rounded-xl border-2 transition-all text-left ${
+              activeLayer === l.id
+                ? `border-${l.color}-400 bg-${l.color}-50`
+                : 'border-gray-200 hover:border-gray-300'
+            }`}>
+            <p className="text-sm font-bold text-gray-800">{l.label}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{l.desc}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* L3 宪法记忆 */}
+      {activeLayer === 'L3' && (
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <p className="text-xs text-red-600 font-medium mb-2">🔴 L3 宪法记忆 — 最高优先级，AI 创作时必须遵守</p>
+            <p className="text-xs text-gray-500">修改后立即生效，AI 下次创作会自动加载</p>
+          </div>
+          {Object.entries(docLabels).filter(([k]) => ['worldview', 'rules', 'conflict', 'settings'].includes(k)).map(([key, meta]) => (
+            <div key={key} className="border border-gray-200 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span>{meta.icon}</span>
+                <span className="text-sm font-medium text-gray-800">{meta.label}</span>
+                <span className="text-xs text-gray-400">({docs[key]?.length || 0} 字)</span>
+              </div>
+              <p className="text-xs text-gray-400 mb-2">{meta.desc}</p>
+              <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 max-h-32 overflow-y-auto whitespace-pre-wrap">
+                {docs[key] || '暂无内容'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* L2 项目记忆 */}
+      {activeLayer === 'L2' && (
+        <div className="space-y-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+            <p className="text-xs text-blue-600 font-medium mb-2">🔵 L2 项目记忆 — 大纲/伏笔/时间线/章节</p>
+            <p className="text-xs text-gray-500">AI 写作时会读取这些内容作为上下文</p>
+          </div>
+          <div className="border border-gray-200 rounded-xl p-4">
+            <p className="text-sm font-medium text-gray-800 mb-2">📋 大纲</p>
+            <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 max-h-40 overflow-y-auto whitespace-pre-wrap">
+              {docs.outline || '暂无大纲'}
+            </div>
+          </div>
+          {project && (
+            <div className="grid grid-cols-3 gap-3">
+              <div className="border border-gray-200 rounded-xl p-3 text-center">
+                <p className="text-2xl font-bold text-purple-600">{project.current_chapter_count || 0}</p>
+                <p className="text-xs text-gray-400">已完成章节</p>
+              </div>
+              <div className="border border-gray-200 rounded-xl p-3 text-center">
+                <p className="text-2xl font-bold text-blue-600">{chapters?.length || 0}</p>
+                <p className="text-xs text-gray-400">章节总数</p>
+              </div>
+              <div className="border border-gray-200 rounded-xl p-3 text-center">
+                <p className="text-2xl font-bold text-green-600">{project.target_chapters || 0}</p>
+                <p className="text-xs text-gray-400">目标章节</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* L1 会话记忆 */}
+      {activeLayer === 'L1' && (
+        <div className="space-y-4">
+          <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+            <p className="text-xs text-green-600 font-medium mb-2">🟢 L1 会话记忆 — 当前对话上下文</p>
+            <p className="text-xs text-gray-500">AI 读取最近 30 条对话作为短期记忆</p>
+          </div>
+          <div className="border border-gray-200 rounded-xl p-4">
+            <p className="text-sm font-medium text-gray-800 mb-2">对话历史</p>
+            <p className="text-xs text-gray-400">最近的对话消息已保存到数据库，AI 每次请求时自动加载最近 30 条作为上下文。</p>
+            <p className="text-xs text-gray-400 mt-2">切换页面或刷新后对话不会丢失。</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -67,19 +67,23 @@ class AIService:
         user_content: str,
         max_tokens: int = 4096,
         stream: bool = False,
+        history: list[dict] | None = None,
     ) -> str | AsyncGenerator[str, None]:
-        """通过 OpenAI 兼容 API 调用（支持 OpenAI/DeepSeek/通义千问/本地模型等）。"""
+        """通过 OpenAI 兼容 API 调用（支持 OpenAI/DeepSeek/通义千问/本地模型等）。支持对话历史。"""
         base_url = self._provider.base_url.rstrip("/")
         headers = {
             "Authorization": f"Bearer {self._provider.api_key}",
             "Content-Type": "application/json",
         }
+        # 构建消息列表：system + history + current message
+        messages = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_content})
+
         payload = {
             "model": self._config.active_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
             "max_tokens": max_tokens,
             "stream": stream,
         }
@@ -121,14 +125,21 @@ class AIService:
         user_content: str,
         max_tokens: int = 4096,
         stream: bool = False,
+        history: list[dict] | None = None,
     ):
-        """通过 Anthropic 原生 API 调用。"""
+        """通过 Anthropic 原生 API 调用。支持对话历史。"""
         client = self._get_anthropic_client()
+        # 构建消息列表：history + current message
+        messages = []
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_content})
+
         kwargs = {
             "model": self._config.active_model,
             "max_tokens": max_tokens,
             "system": system_prompt,
-            "messages": [{"role": "user", "content": user_content}],
+            "messages": messages,
         }
         if stream:
             return client.messages.stream(**kwargs)
@@ -183,17 +194,18 @@ class AIService:
         system_prompt: str,
         user_content: str,
         max_tokens: int = 4096,
+        history: list[dict] | None = None,
     ) -> AsyncGenerator[str, None]:
-        """流式调用，逐块 yield 文本。"""
+        """流式调用，逐块 yield 文本。支持对话历史。"""
         if not self.is_configured:
             raise ValueError("未配置模型供应商，请在设置中添加")
 
         if self._provider.provider_type == "anthropic":
-            async with await self._call_anthropic(system_prompt, user_content, max_tokens, stream=True) as stream_ctx:
+            async with await self._call_anthropic(system_prompt, user_content, max_tokens, stream=True, history=history) as stream_ctx:
                 async for text in stream_ctx.text_stream:
                     yield text
         else:
-            stream_gen = await self._call_openai_compatible(system_prompt, user_content, max_tokens, stream=True)
+            stream_gen = await self._call_openai_compatible(system_prompt, user_content, max_tokens, stream=True, history=history)
             async for chunk in stream_gen:
                 yield chunk
 

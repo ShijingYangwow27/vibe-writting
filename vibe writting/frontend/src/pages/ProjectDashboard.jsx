@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { FileText, ArrowLeft, Sparkles, X, BookOpen } from 'lucide-react'
+import { FileText, ArrowLeft, Sparkles, X, BookOpen, Eye } from 'lucide-react'
 import { useProjectStore } from '../stores/projectStore'
 import { aiApi, documentApi } from '../api/client'
 
@@ -95,7 +95,7 @@ export default function ProjectDashboard() {
       </div>
 
       {/* 快捷入口 */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <Link to={`/project/${id}/chat`}
           className="bg-white rounded-xl border border-gray-200 p-4 hover:border-purple-200 hover:shadow-md transition-all group text-center">
           <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center mx-auto mb-2 group-hover:bg-purple-100 transition-colors">
@@ -111,6 +111,14 @@ export default function ProjectDashboard() {
           </div>
           <p className="text-sm font-medium text-gray-700">文档管理</p>
           <p className="text-xs text-gray-400 mt-0.5">大纲 / 世界观</p>
+        </Link>
+        <Link to={`/project/${id}/elements`}
+          className="bg-white rounded-xl border border-gray-200 p-4 hover:border-purple-200 hover:shadow-md transition-all group text-center">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center mx-auto mb-2 group-hover:bg-emerald-100 transition-colors">
+            <Eye className="w-5 h-5 text-emerald-500" />
+          </div>
+          <p className="text-sm font-medium text-gray-700">故事元素</p>
+          <p className="text-xs text-gray-400 mt-0.5">伏笔 / 时间线 / 角色</p>
         </Link>
         <button onClick={() => setShowInitWizard(true)}
           className="bg-white rounded-xl border border-gray-200 p-4 hover:border-purple-200 hover:shadow-md transition-all group text-center">

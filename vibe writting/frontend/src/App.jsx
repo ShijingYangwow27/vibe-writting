@@ -5,6 +5,7 @@ import ProjectDashboard from './pages/ProjectDashboard'
 import ChatWorkspace from './pages/ChatWorkspace'
 import WritingWorkspace from './pages/WritingWorkspace'
 import DocumentManager from './pages/DocumentManager'
+import StoryElements from './pages/StoryElements'
 import Settings from './pages/Settings'
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
         <Route path="project/:id/write" element={<WritingWorkspace />} />
         <Route path="project/:id/write/:chapterId" element={<WritingWorkspace />} />
         <Route path="project/:id/documents" element={<DocumentManager />} />
+        <Route path="project/:id/elements" element={<StoryElements />} />
         <Route path="settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -10,3 +10,4 @@ build/
 __pycache__/
 .env
 *.db
+backend/data/

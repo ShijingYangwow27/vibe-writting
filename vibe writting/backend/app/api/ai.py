@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -336,38 +337,407 @@ class ChatRequest(BaseModel):
     project_id: int
     message: str
     history: Optional[list[dict]] = None
+    system_override: Optional[str] = None  # 自定义 system prompt
+
+
+async def _build_full_project_context(project_id: int, db) -> str:
+    """加载完整项目上下文：大纲、世界观、法则、角色、伏笔、时间线。"""
+    from ..models.chapter import Chapter
+    from ..models.character import Character
+    from ..models.foreshadowing import Foreshadowing
+    from ..models.timeline import TimelineEvent
+    from ..models.document import Document
+    from ..models.project import Project
+    from sqlalchemy import select
+
+    sections = []
+
+    # 项目信息
+    proj = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if proj:
+        sections.append(f"## 项目信息\n- 书名：{proj.name}\n- 题材：{proj.genre}\n- 进度：{proj.current_chapter_count}/{proj.target_chapters} 章\n- 核心冲突：{proj.core_conflict}\n- 主线梗概：{proj.synopsis}")
+
+    # L3 宪法记忆：世界观、法则、冲突设计、设定记录
+    doc_types = ["outline", "worldview", "rules", "conflict", "settings", "dialogue"]
+    doc_labels = {"outline": "大纲", "worldview": "世界观", "rules": "法则", "conflict": "冲突设计", "settings": "设定记录", "dialogue": "角色台词库"}
+    for dt in doc_types:
+        doc = (await db.execute(select(Document).where(Document.project_id == project_id, Document.doc_type == dt))).scalar_one_or_none()
+        if doc and doc.content and len(doc.content.strip()) > 20:
+            max_len = 5000 if dt == "outline" else 3000
+            sections.append(f"## {doc_labels.get(dt, dt)}\n{doc.content[:max_len]}")
+
+    # 角色（完整详情）
+    chars = (await db.execute(select(Character).where(Character.project_id == project_id))).scalars().all()
+    if chars:
+        char_docs = []
+        for c in chars:
+            role_label = {"protagonist": "主角", "antagonist": "反派", "supporting": "配角"}.get(c.role, c.role)
+            profile = c.profile_data or {}
+            # 优先使用完整文档，否则用结构化字段
+            if profile.get("full_document"):
+                char_docs.append(f"### {c.name}（{role_label}）\n{profile['full_document'][:2000]}")
+            else:
+                details = []
+                for key in ["性格核心", "核心价值观", "致命缺陷", "内心渴望", "背景故事", "成长目标"]:
+                    if profile.get(key):
+                        details.append(f"- {key}：{profile[key]}")
+                char_docs.append(f"### {c.name}（{role_label}）\n" + "\n".join(details) if details else f"### {c.name}（{role_label}）")
+        sections.append("## 角色详情\n" + "\n\n".join(char_docs))
+
+    # 伏笔（完整详情）
+    fss = (await db.execute(select(Foreshadowing).where(Foreshadowing.project_id == project_id))).scalars().all()
+    if fss:
+        fs_docs = []
+        for f in fss:
+            fs_docs.append(f"### {f.name}（{f.status}，第{f.chapter_planted}章埋设" + (f"→第{f.chapter_resolved}章回收" if f.chapter_resolved else "") + "）\n{f.notes[:1000] if f.notes else '暂无详细设计'}")
+        sections.append("## 伏笔详情\n" + "\n\n".join(fs_docs))
+
+    # 时间线（完整详情）
+    tl = (await db.execute(select(TimelineEvent).where(TimelineEvent.project_id == project_id).order_by(TimelineEvent.chapter_number))).scalars().all()
+    if tl:
+        tl_lines = [f"- 第{e.chapter_number}章 [{e.event_type}]：{e.description}" for e in tl]
+        sections.append("## 时间线\n" + "\n".join(tl_lines))
+
+    # 章节列表
+    chapters = (await db.execute(select(Chapter).where(Chapter.project_id == project_id).order_by(Chapter.chapter_number))).scalars().all()
+    if chapters:
+        ch_lines = [f"- 第{ch.chapter_number}章 {ch.title or ''}（{ch.word_count}字，{ch.status}）" for ch in chapters]
+        sections.append("## 章节列表\n" + "\n".join(ch_lines))
+
+    return "\n\n".join(sections)
 
 
 @router.post("/chat")
 async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db)):
-    """通用对话接口，流式输出。"""
+    """通用对话接口，AI 拥有完整项目上下文并可自主执行操作。"""
     ai = AIService(db)
     if not ai.is_configured:
         raise HTTPException(status_code=400, detail="未配置模型供应商")
 
-    # 加载项目记忆
-    memory_content = await ai.memory.build_memory_for_writing(data.project_id, 0)
+    # 优先使用自定义 system prompt
+    if data.system_override:
+        system_prompt = data.system_override
+    else:
+        # 加载完整项目上下文
+        project_context = await _build_full_project_context(data.project_id, db)
 
-    system_prompt = f"""你是一位专业的长篇小说创作助手，当前正在帮助用户创作小说。
+        # 根据用户消息动态加载相关 references
+        from ..core.prompt_manager import load_reference
+        ref_context = ""
+        msg_lower = data.message.lower()
+        # 根据关键词加载对应的 reference
+        ref_map = {
+            "角色": ["character-building", "character-template"],
+            "冲突": ["conflict-design"],
+            "世界观": ["worldbuilding-logic", "worldbuilding-presentation"],
+            "伏笔": ["suspense-design"],
+            "对话": ["dialogue-writing"],
+            "钩子": ["hook-techniques"],
+            "情绪": ["reader-compensation"],
+            "群像": ["ensemble-writing"],
+            "非线性": ["nonlinear-narrative"],
+            "金手指": ["golden-finger-design"],
+            "大纲": ["outline-template", "plot-structures"],
+            "节奏": ["chapter-guide"],
+        }
+        loaded_refs = set()
+        for keyword, refs in ref_map.items():
+            if keyword in msg_lower:
+                for ref in refs:
+                    if ref not in loaded_refs:
+                        content = load_reference(ref)
+                        if not content.startswith("[Reference not found"):
+                            ref_context += f"\n\n---\n\n{content[:2000]}"
+                            loaded_refs.add(ref)
 
-## 项目记忆
-{memory_content[:3000]}
+        # 始终加载核心创作规则
+        for ref in ["chapter-guide", "dialogue-writing", "hook-techniques"]:
+            if ref not in loaded_refs:
+                content = load_reference(ref)
+                if not content.startswith("[Reference not found"):
+                    ref_context += f"\n\n---\n\n{content[:2000]}"
+                    loaded_refs.add(ref)
+
+        system_prompt = f"""你是用户的AI创作助手，拥有对这个小说项目的完整读写能力。你可以查看、创建、修改项目中的所有内容。
+
+## 项目完整数据
+{project_context}
 
 ## 你的能力
-- 回答创作相关问题
-- 提供写作建议
-- 讨论剧情走向
-- 分析人物塑造
+你可以像IDE助手一样操作这个项目：
 
-## 回复规则
-- 用中文回复
-- 简洁但有深度
-- 如果用户想执行具体操作（写章节、生成大纲等），告诉他们直接说关键词即可
-- 不要输出操作指令标签，直接回复自然语言"""
+### 读取
+- 你可以看到项目的大纲全文、所有角色详情、伏笔、时间线、章节
+- 当用户问到相关内容时，直接引用项目数据回答
+
+### 创建
+当用户要求创建内容时，直接创建并确认：
+- 创建角色（单个或多个/群像）
+- 创建伏笔
+- 创建时间线事件
+- 更新已有内容
+
+### 操作指令格式
+在回复末尾输出操作指令（可多个）：
+[ACTION:CREATE_CHARACTER:{{"name":"名字","role":"protagonist/antagonist/supporting","profile_data":{{"性格核心":"...","核心价值观":"...","致命缺陷":"...","内心渴望":"...","背景故事":"...","成长目标":"...","完整描述":"完整markdown"}}}}]
+[ACTION:CREATE_FORESHADOWING:{{"name":"名称","foreshadow_type":"类型","chapter_planted":0,"notes":"完整markdown"}}]
+[ACTION:CREATE_TIMELINE:{{"chapter_number":0,"event_time":"时间","description":"描述","event_type":"plot/relationship/character_change"}}]
+[ACTION:CREATE_CHAPTER:{{"title":"章节标题","content":"完整正文内容markdown"}}]
+[ACTION:UPDATE_CHARACTER:ID:{{字段更新}}]
+[ACTION:UPDATE_FORESHADOWING:ID:{{字段更新}}]
+[ACTION:UPDATE_CHAPTER:ID:{{"content":"更新后的正文"}}]
+
+## 重要：你必须输出操作指令
+当用户要求你做任何创建/修改操作时，你**必须**在回复末尾输出 [ACTION:...] 指令。这是系统保存你工作的唯一方式。
+- 如果用户让你写章节，必须输出 [ACTION:CREATE_CHAPTER:...]
+- 如果你只给回复文本但不输出 ACTION，你的工作成果将不会被保存
+- 操作指令格式是机器可读的，必须严格遵守
+
+## 工作原则
+1. 用户说什么，你就做什么——不要问太多确认问题，直接行动
+2. 写章节时，先输出正文，最后一行输出 [ACTION:CREATE_CHAPTER:{{"title":"章节标题"}}]
+3. 创建角色时给出完整、详细的设计
+4. 创建群像时，每个角色一个独立ACTION
+5. 主动引用项目中已有的内容
+6. 操作指令放最后一行
+
+## 回复风格
+- 中文，像一个真正的创作伙伴
+- 直接行动，不问"你确定吗？"
+- 创建完成后告诉用户做了什么"""
+        # 注入参考知识
+        if ref_context:
+            system_prompt += f"\n\n## 创作参考知识（来自专业写作指南）\n{ref_context[:8000]}"
+        system_prompt += f"\n\n## 项目记忆\n{(await ai.memory.build_memory_for_writing(data.project_id, 0))[:1000]}"
 
     async def event_generator():
-        async for chunk in ai._call_ai_stream(system_prompt, data.message, max_tokens=2048):
-            yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        # 检查是否是"确认写作"（用户确认了写前分析后触发）
+        is_confirm_write = '确认写作' in data.message or '开始写' in data.message or '就这样写' in data.message
+
+        if is_confirm_write:
+            # 用户确认了，直接生成正文
+            # 找到最近创建的章节
+            chapters_result = await db.execute(
+                select(Chapter).where(Chapter.project_id == data.project_id, Chapter.status == "writing")
+                .order_by(Chapter.chapter_number.desc())
+            )
+            chapter = chapters_result.scalar_one_or_none()
+            if chapter:
+                # 从对话历史中提取写前分析
+                analysis_text = ""
+                for h in reversed(data.history or []):
+                    if h.get("role") == "assistant" and "写前分析" in h.get("content", ""):
+                        analysis_text = h["content"]
+                        break
+
+                write_prompt = f"""请根据以下写前分析，撰写第 {chapter.chapter_number} 章的完整正文。
+
+## 写前分析
+{analysis_text[:3000]}
+
+## 写作要求（必须严格遵守）
+1. 默认目标 3000-5000 字，不够就扩写细节
+2. 开头前 20% 必须有钩子
+3. 每章至少推进一条线、回应一个旧悬念、留下一个新钩子
+4. 直接输出纯正文，不写章节标题、不写概要
+5. 场景内部的 Beats 只作隐性骨架，正文要写成连续叙事
+6. **必须严格遵守项目记忆中的世界观设定和法则，不能自相矛盾**
+7. **角色行为必须符合其性格设定，不能 OOC**
+8. **展示不讲述**：用动作、对话、环境细节承载情绪，不要空泛描述
+9. **长短句交替**，用动作、反应、对话承载情绪
+10. **不要写 AI 味**：避免"此外""然而""值得注意"等套语
+11. **伏笔追踪**：项目记忆中有活跃伏笔，本章应至少推进或呼应一条。自然融入正文，不要刻意标注。
+12. **情绪补偿**：如果本章主角受挫/吃亏，必须在本章或紧接着给出补偿（反制、收益、关系回应、信息获取），不能长期纯受气。
+
+请直接输出正文："""
+
+                full_content = ""
+                async for chunk in ai._call_ai_stream(system_prompt, write_prompt, max_tokens=8192, history=data.history):
+                    full_content += chunk
+                    yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+
+                # 保存正文到章节
+                clean_content = re.sub(r'\[ACTION:\w+:.+?\]', '', full_content).strip()
+                chapter.content = clean_content
+                chapter.word_count = len(clean_content.replace(" ", "").replace("\n", ""))
+                chapter.status = "completed"
+                await db.commit()
+
+                # 伏笔追踪：检测正文是否涉及活跃伏笔
+                from ..models.foreshadowing import Foreshadowing
+                fss = (await db.execute(select(Foreshadowing).where(Foreshadowing.project_id == data.project_id, Foreshadowing.status == "active"))).scalars().all()
+                mentioned_fs = []
+                for fs in fss:
+                    if fs.name in clean_content:
+                        mentioned_fs.append(fs.name)
+                if mentioned_fs:
+                    fs_msg = f"\n\n📌 **伏笔追踪**：本章涉及伏笔 → {', '.join(mentioned_fs)}"
+                else:
+                    fs_msg = ""
+
+                save_msg = f"\n\n---\n✅ 已保存「第{chapter.chapter_number}章 {chapter.title}」（{chapter.word_count}字）{fs_msg}"
+                yield f"data: {json.dumps({'content': save_msg}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'content': '没有找到待写作的章节，请先说「写下一章」。'}, ensure_ascii=False)}\n\n"
+
+        else:
+            # 正常对话流程
+            action_results = await _handle_user_intent(data, db)
+
+            # 如果创建了章节，先做写前分析再让 AI 输出
+            chapter_created = None
+            for ar in action_results:
+                if ar.startswith("[ACTION:CHAPTER_CREATED:"):
+                    parts = ar.split(":")
+                    ch_id = int(parts[2])
+                    chapter_created = (await db.execute(select(Chapter).where(Chapter.id == ch_id))).scalar_one_or_none()
+
+            if chapter_created:
+                # 写前分析模式：让 AI 先输出分析+场景规划，而不是直接写正文
+                context_prefix = f"""[系统通知] 已创建第{chapter_created.chapter_number}章「{chapter_created.title}」。
+
+请执行写前分析，必须包含以下内容：
+
+### 写前分析
+- **视角(POV)**：本章主视角角色
+- **目标**：本章核心目标（要推进什么）
+- **冲突**：本章核心冲突
+- **钩子方向**：结尾钩子怎么设计
+- **主角状态**：主角当前处境
+
+### 场景规划（必须输出3-5个场景）
+每个场景格式：
+**场景N：[场景名称]**
+- 地点：
+- 人物：
+- 核心事件：
+- 类型：铺垫/冲突/高潮/转折/收尾
+- 情绪走向：起点→终点
+- 暗线：（伏笔或误导）
+
+分析完成后，用户会确认再写正文。用户确认后会说「确认写作」。
+
+"""
+                full_prompt = context_prefix + data.message
+            else:
+                context_prefix = ""
+                if action_results:
+                    context_prefix = f"\n\n[系统通知] 你刚才为用户执行了以下操作：\n{chr(10).join(action_results)}\n请基于这些操作结果回复用户。\n\n"
+                full_prompt = context_prefix + data.message
+
+            full_content = ""
+            async for chunk in ai._call_ai_stream(system_prompt, full_prompt, max_tokens=8192, history=data.history):
+                full_content += chunk
+                yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+
+            # 如果创建了章节但还没写正文，把分析结果保存到 pre_analysis
+            if chapter_created and not chapter_created.content:
+                chapter_created.pre_analysis = {"analysis": full_content[:2000]}
+                await db.commit()
+
+            # 操作结果
+            if action_results:
+                result_text = "\n\n---\n" + "\n".join(action_results)
+                yield f"data: {json.dumps({'content': result_text}, ensure_ascii=False)}\n\n"
+
         yield "data: {\"done\": true}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+async def _handle_user_intent(data: ChatRequest, db) -> list[str]:
+    """分析用户意图，主动执行操作，不依赖 AI 输出格式。"""
+    from ..models.chapter import Chapter
+    from ..models.character import Character
+    from ..models.project import Project
+    from sqlalchemy import select, func as sqlfunc
+    import re
+
+    msg = data.message.lower()
+    results = []
+
+    # ── 写章节 ──
+    if any(k in msg for k in ['写第', '写下一章', '生成正文', '写正文', '创作第', '续写', '写个章节', '输出章节']):
+        # 找到下一个章节号
+        count_result = await db.execute(select(sqlfunc.count(Chapter.id)).where(Chapter.project_id == data.project_id))
+        max_num = count_result.scalar() or 0
+
+        # 从消息中提取章节标题
+        title_match = re.search(r'第(\d+)章\s*(.*)', data.message)
+        if title_match:
+            ch_num = int(title_match.group(1))
+            ch_title = title_match.group(2).strip()
+        else:
+            ch_num = max_num + 1
+            ch_title = f"第{ch_num}章"
+
+        # 先创建空章节
+        chapter = Chapter(
+            project_id=data.project_id,
+            chapter_number=ch_num,
+            title=ch_title,
+            status="writing",
+        )
+        db.add(chapter)
+
+        # 更新项目章节数
+        proj = (await db.execute(select(Project).where(Project.id == data.project_id))).scalar_one_or_none()
+        if proj:
+            proj.current_chapter_count = (proj.current_chapter_count or 0) + 1
+
+        await db.commit()
+        await db.refresh(chapter)
+        results.append(f"[ACTION:CHAPTER_CREATED:{chapter.id}:{ch_num}:{ch_title}]")
+        return results
+
+    # ── 创建角色 ──
+    if any(k in msg for k in ['创建角色', '新建角色', '添加角色', '设计角色', '建立角色', '帮我设计一个']):
+        if any(k in msg for k in ['角色', '人物', '反派', '主角', '配角']):
+            # 提取角色名
+            name_match = re.search(r'(?:角色|人物|设计一个?|创建)\s*[""「]?(.+?)[""」]?\s*(?:，|,|。|的|是)', msg)
+            char_name = name_match.group(1) if name_match else "新角色"
+            char = Character(
+                project_id=data.project_id,
+                name=char_name,
+                role="supporting",
+                profile_data={"created_from_chat": True, "user_message": data.message},
+            )
+            db.add(char)
+            await db.commit()
+            await db.refresh(char)
+            results.append(f"[ACTION:CHARACTER_CREATED:{char.id}:{char_name}]")
+            return results
+
+    # ── 创建伏笔 ──
+    if any(k in msg for k in ['创建伏笔', '埋伏笔', '添加伏笔', '设计伏笔']):
+        from ..models.foreshadowing import Foreshadowing
+        fs_match = re.search(r'(?:伏笔|设计)\s*[""「]?(.+?)[""」]?', msg)
+        fs_name = fs_match.group(1) if fs_match else "新伏笔"
+        fs = Foreshadowing(
+            project_id=data.project_id,
+            name=fs_name,
+            notes=data.message,
+        )
+        db.add(fs)
+        await db.commit()
+        await db.refresh(fs)
+        results.append(f"[ACTION:FORESHADOWING_CREATED:{fs.id}:{fs_name}]")
+        return results
+
+    # ── 创建时间线事件 ──
+    if any(k in msg for k in ['创建事件', '记录事件', '添加事件']):
+        from ..models.timeline import TimelineEvent
+        ch_match = re.search(r'第(\d+)章', data.message)
+        event = TimelineEvent(
+            project_id=data.project_id,
+            chapter_number=int(ch_match.group(1)) if ch_match else 0,
+            description=data.message[:200],
+            event_type="plot",
+        )
+        db.add(event)
+        await db.commit()
+        await db.refresh(event)
+        results.append(f"[ACTION:TIMELINE_CREATED:{event.id}]")
+        return results
+
+    return results

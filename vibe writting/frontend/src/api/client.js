@@ -51,6 +51,42 @@ export const documentApi = {
   update: (projectId, docType, data) => api.put(`/projects/${projectId}/documents/${docType}`, data),
 }
 
+// 质量检查 API
+export const qualityApi = {
+  check: (projectId, chapterId) => api.get(`/projects/${projectId}/quality/${chapterId}`),
+  summary: (projectId, chapterId) => api.get(`/projects/${projectId}/quality/${chapterId}/summary`),
+}
+
+// 对话历史 API
+export const conversationApi = {
+  list: (projectId) => api.get(`/projects/${projectId}/conversations`),
+  create: (projectId) => api.post(`/projects/${projectId}/conversations`),
+  delete: (projectId, convId) => api.delete(`/projects/${projectId}/conversations/${convId}`),
+  getMessages: (projectId, convId) => api.get(`/projects/${projectId}/conversations/${convId}/messages`),
+  addMessage: (projectId, convId, data) => api.post(`/projects/${projectId}/conversations/${convId}/messages`, data),
+  getHistory: (projectId, convId, limit = 30) => api.get(`/projects/${projectId}/conversations/${convId}/history`, { params: { limit } }),
+  rewind: (projectId, convId, messageId) => api.post(`/projects/${projectId}/conversations/${convId}/rewind`, { message_id: messageId }),
+}
+
+// 故事元素 API（伏笔/时间线/角色）
+export const storyApi = {
+  // 伏笔
+  listForeshadowings: (projectId, status) => api.get(`/projects/${projectId}/foreshadowings`, { params: status ? { status } : {} }),
+  createForeshadowing: (projectId, data) => api.post(`/projects/${projectId}/foreshadowings`, data),
+  updateForeshadowing: (projectId, fsId, data) => api.put(`/projects/${projectId}/foreshadowings/${fsId}`, data),
+  deleteForeshadowing: (projectId, fsId) => api.delete(`/projects/${projectId}/foreshadowings/${fsId}`),
+  // 时间线
+  listTimeline: (projectId) => api.get(`/projects/${projectId}/timeline`),
+  createTimelineEvent: (projectId, data) => api.post(`/projects/${projectId}/timeline`, data),
+  updateTimelineEvent: (projectId, eventId, data) => api.put(`/projects/${projectId}/timeline/${eventId}`, data),
+  deleteTimelineEvent: (projectId, eventId) => api.delete(`/projects/${projectId}/timeline/${eventId}`),
+  // 角色
+  listCharacters: (projectId) => api.get(`/projects/${projectId}/characters`),
+  createCharacter: (projectId, data) => api.post(`/projects/${projectId}/characters`, data),
+  updateCharacter: (projectId, charId, data) => api.put(`/projects/${projectId}/characters/${charId}`, data),
+  deleteCharacter: (projectId, charId) => api.delete(`/projects/${projectId}/characters/${charId}`),
+}
+
 // 流式写入
 export async function writeChapterStream(chapterId, scenePlan, onChunk, onDone) {
   const params = scenePlan ? { scene_plan: JSON.stringify(scenePlan) } : {}
