@@ -5,6 +5,7 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 ## 功能特性
 
 ### 核心能力
+
 - **对话式创作**：像 IDE 助手一样与 AI 协作，AI 拥有完整项目上下文
 - **自动操作**：AI 自动创建角色、伏笔、时间线，无需手动操作
 - **写前分析**：AI 先分析视角、冲突、钩子方向，用户确认后再写正文
@@ -13,6 +14,7 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 - **三层记忆**：宪法记忆（世界观/法则）→ 项目记忆（大纲/伏笔）→ 会话记忆（对话历史）
 
 ### 项目管理
+
 - 5 问立项引导
 - 大纲/世界观/法则/冲突设计文档管理
 - 角色档案管理
@@ -20,6 +22,7 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 - 时间线管理
 
 ### 对话功能
+
 - 对话历史持久化（刷新不丢失）
 - Rewind 回退（撤销操作+删除对话）
 - 多轮对话记忆
@@ -27,12 +30,12 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 
 ## 技术栈
 
-| 层 | 技术 |
-|---|------|
-| 前端 | React + Vite + TailwindCSS |
-| 后端 | Python + FastAPI |
-| 数据库 | SQLite (可迁移到 PostgreSQL) |
-| AI | Anthropic Claude / OpenAI 兼容 API |
+| 层   | 技术                               |
+| --- | -------------------------------- |
+| 前端  | React + Vite + TailwindCSS       |
+| 后端  | Python + FastAPI                 |
+| 数据库 | SQLite (可迁移到 PostgreSQL)         |
+| AI  | Anthropic Claude / OpenAI 兼容 API |
 
 ## 环境要求
 
@@ -45,18 +48,26 @@ AI 驱动的长篇小说创作平台。基于 novel-create skill 的创作方法
 ### 一键安装（推荐）
 
 ```bash
-git clone https://github.com/524985177-png/vibe-writting.git
-cd vibe-writing
-./setup.sh
+git clone https://github.com/524985177-png/vibe-writting.git  # 克隆项目到本地
+cd vibe-writing                                                # 进入项目目录
+./setup.sh                                                     # 运行一键安装脚本
 ```
 
-`setup.sh` 会自动检查环境、安装依赖、创建配置。
+`setup.sh` 包含 5 个步骤，每步都有详细注释：
+
+1. 检查 Python3 环境
+2. 检查 Node.js 环境
+3. 安装后端 Python 依赖（FastAPI、SQLAlchemy、Anthropic SDK 等）
+4. 安装前端 Node 依赖（React、Vite、TailwindCSS 等）
+5. 创建数据存储目录
 
 ### 手动安装
 
 ```bash
-git clone https://github.com/524985177-png/vibe-writting.git
-cd vibe-writing
+git clone https://github.com/524985177-png/vibe-writting.git  
+# 克隆项目到本地
+
+cd vibe-writing                                                # 进入项目目录
 
 # 后端
 cd backend
@@ -75,10 +86,10 @@ cd ..
 
 ### 支持的供应商
 
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| OpenAI 兼容 | 支持 OpenAI API 格式的服务 | OpenAI, DeepSeek, 智谱, Moonshot, Ollama |
-| Anthropic 原生 | Claude 系列模型 | Claude Sonnet, Haiku |
+| 类型           | 说明                  | 示例                                     |
+| ------------ | ------------------- | -------------------------------------- |
+| OpenAI 兼容    | 支持 OpenAI API 格式的服务 | OpenAI, DeepSeek, 智谱, Moonshot, Ollama |
+| Anthropic 原生 | Claude 系列模型         | Claude Sonnet, Haiku                   |
 
 ### 配置步骤
 
@@ -92,13 +103,13 @@ cd ..
 
 ### 预设供应商
 
-| 供应商 | Base URL |
-|--------|----------|
-| OpenAI | `https://api.openai.com/v1` |
-| DeepSeek | `https://api.deepseek.com/v1` |
-| 智谱 (GLM) | `https://open.bigmodel.cn/api/paas/v4` |
-| Moonshot | `https://api.moonshot.cn/v1` |
-| Ollama (本地) | `http://localhost:11434/v1` |
+| 供应商         | Base URL                               |
+| ----------- | -------------------------------------- |
+| OpenAI      | `https://api.openai.com/v1`            |
+| DeepSeek    | `https://api.deepseek.com/v1`          |
+| 智谱 (GLM)    | `https://open.bigmodel.cn/api/paas/v4` |
+| Moonshot    | `https://api.moonshot.cn/v1`           |
+| Ollama (本地) | `http://localhost:11434/v1`            |
 
 ## 启动
 
@@ -122,11 +133,11 @@ npm run dev
 
 ### 访问
 
-| 服务 | 地址 |
-|------|------|
-| 前端界面 | http://localhost:5173 |
-| 后端 API | http://localhost:8000 |
-| API 文档 | http://localhost:8000/docs |
+| 服务     | 地址                           |
+| ------ | ---------------------------- |
+| 前端界面   | <http://localhost:5173>      |
+| 后端 API | <http://localhost:8000>      |
+| API 文档 | <http://localhost:8000/docs> |
 
 ## 使用流程
 
@@ -182,19 +193,19 @@ vibe-writing/
 
 ## API 接口
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/projects` | 项目列表 |
-| POST | `/api/projects` | 创建项目 |
-| POST | `/api/ai/chat` | AI 对话（流式） |
-| POST | `/api/ai/generate-outline` | 生成大纲 |
-| POST | `/api/projects/{id}/quality/{chapter_id}` | 质量检查 |
-| GET | `/api/projects/{id}/foreshadowings` | 伏笔列表 |
-| GET | `/api/projects/{id}/timeline` | 时间线 |
-| GET | `/api/projects/{id}/characters` | 角色列表 |
-| GET | `/api/projects/{id}/conversations` | 对话历史 |
+| 方法   | 路径                                        | 说明        |
+| ---- | ----------------------------------------- | --------- |
+| GET  | `/api/projects`                           | 项目列表      |
+| POST | `/api/projects`                           | 创建项目      |
+| POST | `/api/ai/chat`                            | AI 对话（流式） |
+| POST | `/api/ai/generate-outline`                | 生成大纲      |
+| POST | `/api/projects/{id}/quality/{chapter_id}` | 质量检查      |
+| GET  | `/api/projects/{id}/foreshadowings`       | 伏笔列表      |
+| GET  | `/api/projects/{id}/timeline`             | 时间线       |
+| GET  | `/api/projects/{id}/characters`           | 角色列表      |
+| GET  | `/api/projects/{id}/conversations`        | 对话历史      |
 
-完整 API 文档：启动后访问 http://localhost:8000/docs
+完整 API 文档：启动后访问 <http://localhost:8000/docs>
 
 ## 许可证
 
